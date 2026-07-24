@@ -30,34 +30,36 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 ## Conectarse a Odoo
 
-Al abrir el tablero, la barra lateral pide:
-
-- **URL** de tu instancia (ej. `https://tuempresa.odoo.com`)
-- **Base de datos**
-- **Usuario** (tu correo)
-- **Contraseña o API key** — se recomienda crear una API key dedicada en
-  Odoo: *tu usuario (arriba a la derecha) → Preferencias → Seguridad de la
-  cuenta → Nueva clave API*. Así puedes revocarla sin cambiar tu contraseña.
-
-Las credenciales **no se guardan en disco**: viven solo en la sesión del
-navegador mientras el tablero está abierto. El usuario de Odoo que se use
-necesita acceso de lectura a `helpdesk.ticket`, `helpdesk.sla` y (si quieres
-el desglose de horas por técnico) `account.analytic.line` — el tablero
-respeta los permisos y reglas de registro de ese usuario, tal como lo haría
-dentro de Odoo.
-
-Tras conectar, define el **rango de fechas a consultar** (por defecto,
-últimos 12 meses) y presiona **Cargar / actualizar datos**. Los filtros de
-la barra lateral (cliente, técnico, prioridad, etapa, SLA) se aplican en
-memoria sobre lo ya cargado, sin volver a consultar Odoo.
-
-### Despliegue compartido (opcional)
-
-Si vas a compartir el tablero (por ejemplo en Streamlit Community Cloud) y
-quieres que ya venga conectado sin pedir credenciales, copia
+El tablero se conecta **siempre** con las credenciales de
+`st.secrets["odoo"]` — no hay formulario de login. Copia
 `.streamlit/secrets.toml.example` a `.streamlit/secrets.toml` (ese archivo
-está en `.gitignore`, nunca se sube al repo) y completa los datos de tu
-instancia.
+sí está en `.gitignore`, nunca se sube al repo) y completa:
+
+- **url** de tu instancia (ej. `https://tuempresa.odoo.com`)
+- **db**: nombre de la base de datos
+- **username**: tu correo
+- **api_key**: se recomienda crear una API key dedicada en Odoo — *tu
+  usuario (arriba a la derecha) → Preferencias → Seguridad de la cuenta →
+  Nueva clave API* — en vez de tu contraseña real, para poder revocarla sin
+  cambiar tu acceso.
+
+Para un **despliegue compartido** (Streamlit Community Cloud u otro),
+configura la misma tabla `[odoo]` en *Manage app → Settings → Secrets*. El
+usuario de Odoo que uses necesita acceso de lectura a `helpdesk.ticket`,
+`helpdesk.sla` y (si quieres el desglose de horas por técnico)
+`account.analytic.line` — el tablero respeta los permisos y reglas de
+registro de ese usuario, tal como lo haría dentro de Odoo.
+
+Ya conectado, define el **rango de fechas a consultar** en la barra lateral
+(por defecto, últimos 12 meses) — se vuelve a consultar Odoo automáticamente
+si lo cambias. Los datos quedan en caché 10 minutos; usa **🔄 Refrescar
+datos** para forzar una consulta nueva. Los demás filtros (cliente, técnico,
+prioridad, etapa, SLA) se aplican en memoria sobre lo ya cargado.
+
+Si algo se ve raro (técnico o cliente en blanco, fechas que no cuadran),
+abre **🔍 Diagnóstico de conexión** en la barra lateral: muestra 1-2 tickets
+tal cual los devuelve Odoo, sin transformar, para comparar contra lo que
+esperas.
 
 ## Qué muestra
 

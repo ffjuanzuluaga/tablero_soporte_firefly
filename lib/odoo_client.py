@@ -12,6 +12,7 @@ la cuenta → Nueva clave API) en vez de la contraseña real.
 
 from __future__ import annotations
 
+import threading
 import xmlrpc.client
 from dataclasses import dataclass
 
@@ -19,17 +20,31 @@ import pandas as pd
 
 from lib.data_loader import derive_ticket_fields, parse_datetime
 
-TICKET_FIELDS = [
+# Campos que existen en cualquier instalación de `helpdesk` (módulo base):
+# se piden siempre, sin verificar disponibilidad antes.
+CORE_TICKET_FIELDS = [
     "id", "ticket_ref", "name", "team_id", "partner_id", "user_id", "stage_id",
-    "priority", "create_date", "close_date", "assign_date",
+    "priority", "create_date", "close_date", "assign_date", "kanban_state",
+]
+
+# Campos que dependen de módulos opcionales (helpdesk_timesheet, SLA
+# configurado, etc.): se piden solo si `fields_get` confirma que existen,
+# para que su ausencia nunca tumbe ni recorte la consulta de los campos core.
+OPTIONAL_TICKET_FIELDS = [
     "close_hours", "assign_hours", "open_hours",
     "first_response_hours", "avg_response_hours",
     "sla_ids", "sla_deadline", "sla_deadline_hours",
     "sla_reached", "sla_reached_late", "sla_fail", "sla_success",
-    "total_hours_spent", "kanban_state",
+    "total_hours_spent",
 ]
 
 TIMESHEET_FIELDS = ["id", "helpdesk_ticket_id", "employee_id", "user_id", "date", "unit_amount"]
+
+# xmlrpc.client.ServerProxy no es thread-safe sobre una misma conexión: si
+# Streamlit llega a invocar el cliente cacheado desde más de un hilo/sesión al
+# tiempo, dos respuestas pueden entrelazarse en el mismo socket. Se serializan
+# las llamadas para evitar datos corruptos o cruzados entre tickets.
+_rpc_lock = threading.Lock()
 
 
 class OdooConnectionError(RuntimeError):
@@ -78,9 +93,10 @@ class OdooClient:
         if not self.uid:
             self.authenticate()
         try:
-            return self._models.execute_kw(
-                self.creds.db, self.uid, self.creds.api_key, model, method, list(args), kwargs
-            )
+            with _rpc_lock:
+                return self._models.execute_kw(
+                    self.creds.db, self.uid, self.creds.api_key, model, method, list(args), kwargs
+                )
         except xmlrpc.client.Fault as exc:
             raise OdooConnectionError(exc.faultString) from exc
         except Exception as exc:  # noqa: BLE001
@@ -136,15 +152,30 @@ def _ticket_row(rec: dict, priority_map: dict[str, str], sla_name_map: dict[int,
     }
 
 
-def fetch_tickets(client: OdooClient, date_from=None, date_to=None) -> pd.DataFrame:
+def _ticket_fields(client: OdooClient) -> list[str]:
     available = client.available_fields("helpdesk.ticket")
-    fields = [f for f in TICKET_FIELDS if f in available]
+    return CORE_TICKET_FIELDS + [f for f in OPTIONAL_TICKET_FIELDS if f in available]
 
+
+def _ticket_domain(date_from=None, date_to=None) -> list:
     domain: list = []
     if date_from:
         domain.append(("create_date", ">=", f"{date_from} 00:00:00"))
     if date_to:
         domain.append(("create_date", "<=", f"{date_to} 23:59:59"))
+    return domain
+
+
+def fetch_ticket_sample_raw(client: OdooClient, limit: int = 2) -> list[dict]:
+    """Trae N tickets tal cual los devuelve Odoo, sin transformar — para depurar
+    en la app qué valores reales llegan en user_id/partner_id/create_date."""
+    fields = _ticket_fields(client)
+    return client.search_read("helpdesk.ticket", [], fields, order="create_date desc")[:limit]
+
+
+def fetch_tickets(client: OdooClient, date_from=None, date_to=None) -> pd.DataFrame:
+    fields = _ticket_fields(client)
+    domain = _ticket_domain(date_from, date_to)
 
     records = client.search_read("helpdesk.ticket", domain, fields, order="create_date desc")
     if not records:
@@ -193,13 +224,8 @@ def fetch_timesheets(client: OdooClient, ticket_ids: list[int]) -> pd.DataFrame:
     return df
 
 
-def load_from_odoo(creds: OdooCredentials, date_from=None, date_to=None) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Autentica y trae tickets + horas en un solo viaje. Lanza OdooConnectionError si algo falla."""
+def connect(creds: OdooCredentials) -> OdooClient:
+    """Crea el cliente y autentica de una vez. Lanza OdooConnectionError si falla."""
     client = OdooClient(creds)
     client.authenticate()
-    tickets_df = fetch_tickets(client, date_from, date_to)
-    ticket_ids = (
-        tickets_df["id"].dropna().astype(int).tolist() if "id" in tickets_df.columns and len(tickets_df) else []
-    )
-    timesheets_df = fetch_timesheets(client, ticket_ids)
-    return tickets_df, timesheets_df
+    return client

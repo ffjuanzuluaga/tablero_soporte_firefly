@@ -15,95 +15,102 @@ import streamlit as st
 
 from lib import charts, constants as C, metrics, ui
 from lib.demo_data import build_demo_dataframe
-from lib.odoo_client import OdooConnectionError, OdooCredentials, load_from_odoo
+from lib.odoo_client import (
+    OdooClient,
+    OdooConnectionError,
+    OdooCredentials,
+    fetch_ticket_sample_raw,
+    fetch_tickets,
+    fetch_timesheets,
+)
 
 st.set_page_config(page_title="Tablero de Soporte — Firefly", page_icon="🎫", layout="wide")
 ui.inject_css()
 
 
 # ---------------------------------------------------------------------------
-# Conexión a Odoo
+# Conexión a Odoo — credenciales SIEMPRE desde st.secrets["odoo"] (nunca en
+# disco propio, nunca pedidas por formulario): configúralas en
+# .streamlit/secrets.toml para desarrollo local, o en Streamlit Cloud →
+# Manage app → Settings → Secrets para producción.
 # ---------------------------------------------------------------------------
 
 st.sidebar.markdown("## ⚡ Firefly Support")
 st.sidebar.caption("Tablero ejecutivo de soporte")
-st.sidebar.markdown("### Conexión a Odoo")
 
 
-def _secret_defaults() -> dict[str, str]:
-    """Valores presentes (y no vacíos) en st.secrets['odoo'], si existe."""
+@st.cache_resource(show_spinner="Conectando con Odoo…")
+def get_odoo_client() -> OdooClient:
     try:
         s = st.secrets["odoo"]
-    except Exception:  # noqa: BLE001 - no hay secrets.toml configurado, es opcional
-        return {}
-    return {k: str(s[k]).strip() for k in ("url", "db", "username", "api_key") if s.get(k)}
+        creds = OdooCredentials(url=s["url"], db=s["db"], username=s["username"], api_key=s["api_key"])
+    except Exception as exc:  # noqa: BLE001
+        raise OdooConnectionError(
+            "Faltan credenciales de Odoo. Configura la tabla [odoo] (url, db, username, api_key) "
+            "en .streamlit/secrets.toml (local) o en Manage app → Settings → Secrets (Streamlit Cloud)."
+        ) from exc
+    client = OdooClient(creds)
+    client.authenticate()
+    return client
 
 
-if "odoo_creds" not in st.session_state:
-    defaults = _secret_defaults()
-    if {"url", "db", "username", "api_key"} <= defaults.keys():
-        # Los 4 campos vienen completos en secrets: se conecta directo, sin pedir login
-        # (una sola identidad de Odoo compartida por todos los que abran el tablero).
-        st.session_state.odoo_creds = OdooCredentials(**defaults)
-    else:
-        st.session_state.odoo_creds = None
-    st.session_state.odoo_secret_defaults = defaults
-if "odoo_tickets_df" not in st.session_state:
-    st.session_state.odoo_tickets_df = None
-    st.session_state.odoo_timesheets_df = None
+@st.cache_data(ttl=600, show_spinner="Consultando tickets en Odoo…")
+def load_tickets_cached(_client: OdooClient, date_from: str, date_to: str) -> pd.DataFrame:
+    return fetch_tickets(_client, date_from=date_from, date_to=date_to)
 
-if st.session_state.odoo_creds is None:
-    defaults = st.session_state.get("odoo_secret_defaults", {})
-    with st.sidebar.form("odoo_login"):
-        st.caption("Credenciales de sesión: no se guardan en disco.")
-        url_in = st.text_input("URL de Odoo", value=defaults.get("url", ""), placeholder="https://tuempresa.odoo.com")
-        db_in = st.text_input("Base de datos", value=defaults.get("db", ""))
-        user_in = st.text_input("Usuario (correo)", value=defaults.get("username", ""))
-        key_in = st.text_input(
-            "Contraseña o API key", type="password", value=defaults.get("api_key", ""),
-            help="Recomendado: crea una API key en Odoo → tu usuario → Preferencias → "
-                 "Seguridad de la cuenta → Nueva clave API, en vez de usar tu contraseña real.",
-        )
-        connect_clicked = st.form_submit_button("🔌 Conectar")
-    if connect_clicked:
-        if not (url_in and db_in and user_in and key_in):
-            st.sidebar.error("Completa URL, base de datos, usuario y contraseña/API key.")
-        else:
-            st.session_state.odoo_creds = OdooCredentials(url=url_in, db=db_in, username=user_in, api_key=key_in)
-            st.session_state.odoo_tickets_df = None
-            st.rerun()
+
+@st.cache_data(ttl=600, show_spinner="Consultando horas registradas…")
+def load_timesheets_cached(_client: OdooClient, ticket_ids: tuple[int, ...]) -> pd.DataFrame:
+    return fetch_timesheets(_client, list(ticket_ids))
+
+
+try:
+    odoo_client = get_odoo_client()
+    connection_error = None
+except OdooConnectionError as exc:
+    odoo_client = None
+    connection_error = str(exc)
+
+using_demo = True
+df_all = None
+ts_df = None
+
+if connection_error:
+    st.sidebar.error(connection_error)
 else:
-    creds = st.session_state.odoo_creds
-    st.sidebar.success(f"Conectado: {creds.username}\n\n{creds.url}")
-    if st.sidebar.button("Cerrar sesión / cambiar instancia"):
-        st.session_state.odoo_creds = None
-        st.session_state.odoo_tickets_df = None
-        st.session_state.odoo_timesheets_df = None
-        st.rerun()
-
+    st.sidebar.success(f"Conectado: {odoo_client.creds.username}\n\n{odoo_client.creds.url}")
     st.sidebar.markdown("##### Rango a consultar en Odoo")
     today = dt.date.today()
     fetch_from = st.sidebar.date_input("Desde", value=today - dt.timedelta(days=365))
     fetch_to = st.sidebar.date_input("Hasta", value=today)
-    if st.sidebar.button("🔄 Cargar / actualizar datos", type="primary"):
-        with st.spinner("Consultando Odoo…"):
-            try:
-                tickets_df, timesheets_df = load_from_odoo(creds, date_from=fetch_from, date_to=fetch_to)
-                st.session_state.odoo_tickets_df = tickets_df
-                st.session_state.odoo_timesheets_df = timesheets_df
-            except OdooConnectionError as exc:
-                st.sidebar.error(str(exc))
+    if st.sidebar.button("🔄 Refrescar datos", type="primary"):
+        st.cache_data.clear()
+        st.rerun()
 
-using_demo = st.session_state.odoo_tickets_df is None
+    try:
+        df_all = load_tickets_cached(odoo_client, fetch_from.isoformat(), fetch_to.isoformat())
+        ticket_ids = tuple(df_all["id"].dropna().astype(int).tolist()) if "id" in df_all.columns and len(df_all) else ()
+        ts_df = load_timesheets_cached(odoo_client, ticket_ids)
+        using_demo = False
+    except OdooConnectionError as exc:
+        st.sidebar.error(str(exc))
+
+    with st.sidebar.expander("🔍 Diagnóstico de conexión"):
+        st.caption("Ticket(s) tal cual los devuelve Odoo, sin transformar — útil para depurar "
+                   "campos que se ven mal (técnico, cliente, fechas...).")
+        if st.button("Consultar muestra cruda"):
+            try:
+                st.json(fetch_ticket_sample_raw(odoo_client, limit=2))
+            except OdooConnectionError as exc:
+                st.error(str(exc))
+
 if using_demo:
-    df_all = build_demo_dataframe()
+    if df_all is None:
+        df_all = build_demo_dataframe()
     ts_df = None
-else:
-    df_all = st.session_state.odoo_tickets_df
-    ts_df = st.session_state.odoo_timesheets_df
-    if df_all.empty:
-        st.warning("La consulta a Odoo no devolvió tickets para ese rango de fechas.")
-        st.stop()
+elif df_all.empty:
+    st.warning("La consulta a Odoo no devolvió tickets para ese rango de fechas.")
+    st.stop()
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +123,13 @@ st.sidebar.markdown("### Filtros")
 valid_dates = df_all["create_date"].dropna()
 if len(valid_dates):
     min_d, max_d = valid_dates.min().date(), valid_dates.max().date()
-    date_range = st.sidebar.date_input("Fecha de creación", value=(min_d, max_d), min_value=min_d, max_value=max_d)
+    # key incluye min/max: si los datos cambian (nueva consulta a Odoo con otro
+    # rango), Streamlit trata el widget como nuevo y lo reinicializa con el
+    # rango real en vez de arrastrar una selección "quemada" de una carga previa.
+    date_range = st.sidebar.date_input(
+        "Fecha de creación", value=(min_d, max_d), min_value=min_d, max_value=max_d,
+        key=f"date_filter_{min_d}_{max_d}",
+    )
 else:
     date_range = None
 
