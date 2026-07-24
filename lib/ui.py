@@ -60,18 +60,28 @@ def inject_css() -> None:
 
 
 def kpi_row(items: list[dict]) -> None:
-    """items: [{label, value, sub, color}]"""
+    """items: [{label, value, sub, color}]
+
+    Cada tarjeta se arma en una sola línea, sin indentación ni saltos de
+    línea internos: st.markdown pasa el contenido por un parser de Markdown
+    antes de permitir el HTML crudo, y una línea en blanco seguida de texto
+    indentado 4+ espacios se interpreta como un bloque de código literal en
+    vez de HTML — cortando el render a partir de la segunda tarjeta.
+    """
     cards = []
     for it in items:
         color = it.get("color", C.CATEGORICAL[0])
-        cards.append(f"""
-        <div class="kpi-card" style="--accent:{color}">
-          <div style="position:absolute;top:0;left:0;right:0;height:3px;background:{color}"></div>
-          <div class="kpi-label">{html.escape(str(it['label']))}</div>
-          <div class="kpi-value">{html.escape(str(it['value']))}</div>
-          <div class="kpi-sub">{html.escape(str(it.get('sub', '')))}</div>
-        </div>
-        """)
+        label = html.escape(str(it["label"]))
+        value = html.escape(str(it["value"]))
+        sub = html.escape(str(it.get("sub", "")))
+        cards.append(
+            f'<div class="kpi-card" style="--accent:{color}">'
+            f'<div style="position:absolute;top:0;left:0;right:0;height:3px;background:{color}"></div>'
+            f'<div class="kpi-label">{label}</div>'
+            f'<div class="kpi-value">{value}</div>'
+            f'<div class="kpi-sub">{sub}</div>'
+            f'</div>'
+        )
     st.markdown(f'<div class="kpi-grid">{"".join(cards)}</div>', unsafe_allow_html=True)
 
 
