@@ -104,10 +104,31 @@ def monthly_trend(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def monthly_close_rate(trend_df: pd.DataFrame) -> pd.DataFrame:
-    out = trend_df.copy()
-    out["tasa_pct"] = np.where(out["creados"] > 0, out["cerrados"] / out["creados"] * 100, 0.0)
-    return out
+def monthly_close_rate(df: pd.DataFrame) -> pd.DataFrame:
+    """Tasa de cierre por cohorte de creación: de los tickets CREADOS en cada
+    mes, qué % ya está cerrado a la fecha de la consulta.
+
+    Nota: a propósito NO se calcula como (cerrados-en-el-mes / creados-en-el-mes)
+    con "cerrados" por fecha de cierre — esas son poblaciones distintas de
+    tickets y la división puede superar 100% (p.ej. un mes donde se destraba
+    backlog viejo), lo que se ve como un gráfico recortado/raro contra un eje
+    0-100%. Aquí "cerrados" siempre es un subconjunto de "creados" del mismo
+    mes, así que la tasa queda garantizada entre 0 y 100%.
+    """
+    months = _month_axis(df)
+    rows = []
+    for m in months:
+        part = df[df["create_month"] == m]
+        creados = len(part)
+        cerrados = int(part["is_closed"].sum())
+        rows.append({
+            "month": m,
+            "label": f"{C.MESES_ES.get(m.month, m.month)} {m.year}",
+            "creados": creados,
+            "cerrados": cerrados,
+            "tasa_pct": (cerrados / creados * 100) if creados else 0.0,
+        })
+    return pd.DataFrame(rows, columns=["month", "label", "creados", "cerrados", "tasa_pct"])
 
 
 def monthly_avg_hours(df: pd.DataFrame) -> pd.DataFrame:

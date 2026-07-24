@@ -120,18 +120,13 @@ elif df_all.empty:
 st.sidebar.markdown("---")
 st.sidebar.markdown("### Filtros")
 
+# El rango de fechas ya se define una sola vez arriba ("Rango a consultar en
+# Odoo"): los datos cargados YA vienen acotados a ese período, así que no
+# hace falta un segundo selector de fechas aquí para filtrarlos de nuevo.
 valid_dates = df_all["create_date"].dropna()
-if len(valid_dates):
-    min_d, max_d = valid_dates.min().date(), valid_dates.max().date()
-    # key incluye min/max: si los datos cambian (nueva consulta a Odoo con otro
-    # rango), Streamlit trata el widget como nuevo y lo reinicializa con el
-    # rango real en vez de arrastrar una selección "quemada" de una carga previa.
-    date_range = st.sidebar.date_input(
-        "Fecha de creación", value=(min_d, max_d), min_value=min_d, max_value=max_d,
-        key=f"date_filter_{min_d}_{max_d}",
-    )
-else:
-    date_range = None
+min_d = valid_dates.min().date() if len(valid_dates) else None
+max_d = valid_dates.max().date() if len(valid_dates) else None
+
 
 def _options(col: str, exclude: str | None = None) -> list[str]:
     vals = sorted(v for v in df_all[col].dropna().unique() if v != exclude)
@@ -149,10 +144,6 @@ f_sla = st.sidebar.multiselect("Política de SLA", sla_policy_options)
 
 def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
     mask = pd.Series(True, index=df.index)
-    if date_range and isinstance(date_range, tuple) and len(date_range) == 2:
-        start = pd.Timestamp(date_range[0])
-        end = pd.Timestamp(date_range[1]) + pd.Timedelta(days=1)
-        mask &= df["create_date"].between(start, end, inclusive="left")
     if f_team:
         mask &= df["team"].isin(f_team)
     if f_client:
@@ -174,15 +165,13 @@ df = apply_filters(df_all)
 if using_demo:
     st.info(
         "📊 Mostrando **datos de ejemplo sintéticos** (no son datos reales de ningún cliente). "
-        "Conéctate a tu instancia de Odoo en la barra lateral y presiona **Cargar / actualizar datos** "
+        "Revisa las credenciales de Odoo en `st.secrets` (ver el mensaje en la barra lateral) "
         "para ver tu operación real.",
         icon="ℹ️",
     )
 
 st.title("Tablero de Soporte")
-period_txt = ""
-if len(valid_dates):
-    period_txt = f" · {date_range[0].strftime('%d/%m/%Y')} — {date_range[1].strftime('%d/%m/%Y')}" if date_range else ""
+period_txt = f" · {min_d.strftime('%d/%m/%Y')} — {max_d.strftime('%d/%m/%Y')}" if min_d else ""
 st.caption(f"{len(df)} tickets en el filtro actual (de {len(df_all)} totales){period_txt}")
 
 
@@ -232,7 +221,7 @@ with tab_overview:
         st.plotly_chart(charts.donut_by_category(prio_df, "priority", "count", priority_color_map(order)), width='stretch', config={"displayModeBar": False}, key="ov_priority")
     with c4:
         ui.chart_header("Tasa de efectividad de cierre", "% de tickets cerrados sobre los creados, por mes")
-        rate_df = metrics.monthly_close_rate(metrics.monthly_trend(df))
+        rate_df = metrics.monthly_close_rate(df)
         st.plotly_chart(charts.line_series(rate_df, "label", "tasa_pct", "Tasa", color=C.CATEGORICAL[6], y_suffix="%", y_range=(0, 100)), width='stretch', config={"displayModeBar": False}, key="ov_close_rate")
 
     ui.chart_header("Top 8 clientes por volumen de tickets")
