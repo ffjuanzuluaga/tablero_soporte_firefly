@@ -18,6 +18,12 @@ eggs/
 .eggs/
 lib/
 lib64/
+# El bloque de arriba es el boilerplate estándar de Python (ignora lib/ y
+# lib64/ generados por builds/venvs); nuestro paquete de la app vive en
+# /lib en la raíz del repo, así que lo desexcluimos explícitamente aquí.
+!/lib/
+!/lib/**
+lib/__pycache__/
 parts/
 sdist/
 var/

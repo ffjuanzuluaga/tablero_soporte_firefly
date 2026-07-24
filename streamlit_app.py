@@ -30,28 +30,37 @@ st.sidebar.caption("Tablero ejecutivo de soporte")
 st.sidebar.markdown("### Conexión a Odoo")
 
 
-def _secret_credentials() -> OdooCredentials | None:
+def _secret_defaults() -> dict[str, str]:
+    """Valores presentes (y no vacíos) en st.secrets['odoo'], si existe."""
     try:
         s = st.secrets["odoo"]
-        return OdooCredentials(url=s["url"], db=s["db"], username=s["username"], api_key=s["api_key"])
     except Exception:  # noqa: BLE001 - no hay secrets.toml configurado, es opcional
-        return None
+        return {}
+    return {k: str(s[k]).strip() for k in ("url", "db", "username", "api_key") if s.get(k)}
 
 
 if "odoo_creds" not in st.session_state:
-    st.session_state.odoo_creds = _secret_credentials()
+    defaults = _secret_defaults()
+    if {"url", "db", "username", "api_key"} <= defaults.keys():
+        # Los 4 campos vienen completos en secrets: se conecta directo, sin pedir login
+        # (una sola identidad de Odoo compartida por todos los que abran el tablero).
+        st.session_state.odoo_creds = OdooCredentials(**defaults)
+    else:
+        st.session_state.odoo_creds = None
+    st.session_state.odoo_secret_defaults = defaults
 if "odoo_tickets_df" not in st.session_state:
     st.session_state.odoo_tickets_df = None
     st.session_state.odoo_timesheets_df = None
 
 if st.session_state.odoo_creds is None:
+    defaults = st.session_state.get("odoo_secret_defaults", {})
     with st.sidebar.form("odoo_login"):
         st.caption("Credenciales de sesión: no se guardan en disco.")
-        url_in = st.text_input("URL de Odoo", placeholder="https://tuempresa.odoo.com")
-        db_in = st.text_input("Base de datos")
-        user_in = st.text_input("Usuario (correo)")
+        url_in = st.text_input("URL de Odoo", value=defaults.get("url", ""), placeholder="https://tuempresa.odoo.com")
+        db_in = st.text_input("Base de datos", value=defaults.get("db", ""))
+        user_in = st.text_input("Usuario (correo)", value=defaults.get("username", ""))
         key_in = st.text_input(
-            "Contraseña o API key", type="password",
+            "Contraseña o API key", type="password", value=defaults.get("api_key", ""),
             help="Recomendado: crea una API key en Odoo → tu usuario → Preferencias → "
                  "Seguridad de la cuenta → Nueva clave API, en vez de usar tu contraseña real.",
         )
