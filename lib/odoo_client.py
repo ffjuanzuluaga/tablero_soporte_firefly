@@ -1,13 +1,13 @@
 """Conexión en vivo a Odoo vía XML-RPC para leer `helpdesk.ticket` y horas.
 
 Usa únicamente los campos técnicos reales del modelo (ver los módulos
-`helpdesk` / `helpdesk_timesheet` en el código fuente de Odoo 19), así que
-no depende del idioma de la interfaz ni del orden de columnas de un export.
+`helpdesk` / `helpdesk_timesheet` / `sale_subscription` en el código fuente
+de Odoo 19), así que no depende del idioma de la interfaz.
 
-Credenciales: nunca se escriben a disco. Se toman de `st.secrets["odoo"]`
-si existen, o se piden en un formulario de sesión (ver `streamlit_app.py`).
-Se recomienda usar una API key de Odoo (Ajustes de usuario → Seguridad de
-la cuenta → Nueva clave API) en vez de la contraseña real.
+Credenciales: siempre desde `st.secrets["odoo"]` (ver `streamlit_app.py`),
+nunca escritas a disco por esta app. Se recomienda usar una API key de Odoo
+(Ajustes de usuario → Seguridad de la cuenta → Nueva clave API) en vez de la
+contraseña real.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from lib.data_loader import derive_ticket_fields, parse_datetime
+from lib.data_loader import derive_ticket_fields
 
 # Campos que existen en cualquier instalación de `helpdesk` (módulo base):
 # se piden siempre, sin verificar disponibilidad antes.
@@ -37,8 +37,6 @@ OPTIONAL_TICKET_FIELDS = [
     "sla_reached", "sla_reached_late", "sla_fail", "sla_success",
     "total_hours_spent",
 ]
-
-TIMESHEET_FIELDS = ["id", "helpdesk_ticket_id", "employee_id", "user_id", "date", "unit_amount"]
 
 # xmlrpc.client.ServerProxy no es thread-safe sobre una misma conexión: si
 # Streamlit llega a invocar el cliente cacheado desde más de un hilo/sesión al
@@ -193,35 +191,19 @@ def fetch_tickets(client: OdooClient, date_from=None, date_to=None) -> pd.DataFr
     return derive_ticket_fields(pd.DataFrame(rows))
 
 
-def fetch_timesheets(client: OdooClient, ticket_ids: list[int]) -> pd.DataFrame:
-    empty = pd.DataFrame(columns=["ticket_ref", "employee", "date", "unit_amount"])
-    if not ticket_ids:
-        return empty
-
-    available = client.available_fields("account.analytic.line")
-    if "helpdesk_ticket_id" not in available:
-        return empty  # helpdesk_timesheet no está instalado
-    fields = [f for f in TIMESHEET_FIELDS if f in available]
-
+def fetch_active_support_contracts(client: OdooClient) -> int | None:
+    """Clientes con un contrato de soporte activo = suscripción (`sale.order`)
+    con `subscription_state = '3_progress'` (En curso). Requiere el módulo
+    `sale_subscription`; si no está instalado devuelve None (la UI lo muestra
+    como "N/D" en vez de un número engañoso)."""
+    available = client.available_fields("sale.order")
+    if "subscription_state" not in available:
+        return None
     records = client.search_read(
-        "account.analytic.line", [("helpdesk_ticket_id", "in", ticket_ids)], fields
+        "sale.order", [("subscription_state", "=", "3_progress")], ["partner_id"]
     )
-    if not records:
-        return empty
-
-    rows = []
-    for rec in records:
-        employee = _m2o_name(rec.get("employee_id")) or _m2o_name(rec.get("user_id"), "Sin asignar")
-        ticket = rec.get("helpdesk_ticket_id")
-        rows.append({
-            "ticket_ref": ticket[1] if isinstance(ticket, (list, tuple)) else None,
-            "employee": employee,
-            "date": rec.get("date") or None,
-            "unit_amount": rec.get("unit_amount"),
-        })
-    df = pd.DataFrame(rows)
-    df["date"] = parse_datetime(df["date"])
-    return df
+    partner_ids = {rec["partner_id"][0] for rec in records if isinstance(rec.get("partner_id"), (list, tuple))}
+    return len(partner_ids)
 
 
 def connect(creds: OdooCredentials) -> OdooClient:

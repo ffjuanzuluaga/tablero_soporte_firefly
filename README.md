@@ -46,15 +46,16 @@ sí está en `.gitignore`, nunca se sube al repo) y completa:
 Para un **despliegue compartido** (Streamlit Community Cloud u otro),
 configura la misma tabla `[odoo]` en *Manage app → Settings → Secrets*. El
 usuario de Odoo que uses necesita acceso de lectura a `helpdesk.ticket`,
-`helpdesk.sla` y (si quieres el desglose de horas por técnico)
-`account.analytic.line` — el tablero respeta los permisos y reglas de
+`helpdesk.sla` y, si quieres el KPI de contratos activos, `sale.order`
+(módulo `sale_subscription`) — el tablero respeta los permisos y reglas de
 registro de ese usuario, tal como lo haría dentro de Odoo.
 
 Ya conectado, define el **rango de fechas a consultar** en la barra lateral
-(por defecto, últimos 12 meses) — se vuelve a consultar Odoo automáticamente
-si lo cambias. Los datos quedan en caché 10 minutos; usa **🔄 Refrescar
-datos** para forzar una consulta nueva. Los demás filtros (cliente, técnico,
-prioridad, etapa, SLA) se aplican en memoria sobre lo ya cargado.
+(por defecto, **últimos 6 meses** — el mínimo para ver comparativos
+mensuales con sentido). Los datos quedan en caché 10 minutos; usa **🔄
+Refrescar datos** para forzar una consulta nueva. Los demás filtros
+(cliente, técnico, prioridad, etapa, SLA) se aplican en memoria sobre lo ya
+cargado.
 
 Si algo se ve raro (técnico o cliente en blanco, fechas que no cuadran),
 abre **🔍 Diagnóstico de conexión** en la barra lateral: muestra 1-2 tickets
@@ -63,16 +64,25 @@ esperas.
 
 ## Qué muestra
 
-- **Resumen**: tickets creados/cerrados, tasa de cierre, horas invertidas,
-  resolución promedio, distribución por etapa y prioridad, top clientes.
-- **SLA**: cumplimiento global, cumplimiento por política/nivel de SLA,
-  tendencia mensual, tickets vencidos.
-- **Tendencias**: horas promedio por mes, primera respuesta, carga por día
-  de la semana, resolución por prioridad.
-- **Técnicos**: carga y horas por técnico, ranking, evolución mensual.
-- **Clientes**: volumen y horas por cliente, ranking.
-- **Tickets**: listado completo filtrable, exportable a CSV.
-- **Heatmap**: tickets por cliente × mes.
+Todo lo relacionado con SLA/resolución/horas se desglosa por **criticidad**
+(prioridad) en vez de una sola cifra global, y las comparaciones entre
+clientes/técnicos usan **promedio mensual** (no acumulado) para no penalizar
+a quien lleva menos tiempo en soporte.
+
+- **Resumen**: tickets abiertos actualmente, promedios mensuales de
+  cerrados/horas, horas del mes en curso, clientes con contrato de soporte
+  activo, creados vs. cerrados vs. backlog (cola acumulada), etapa de los
+  abiertos, prioridad por mes, tasa de efectividad de cierre, top clientes
+  (promedio) y top 3 clientes con más tickets abiertos.
+- **SLA**: cumplimiento y resolución promedio por criticidad (4 indicadores
+  c/u), incumplimiento apilado por criticidad por mes, cumplimiento mensual
+  en 4 líneas con el % marcado en cada punto, detalle histórico mes×
+  prioridad, horas y primera respuesta promedio por mes (por criticidad).
+- **Técnicos**: tickets y horas por técnico y mes, ranking con promedios
+  mensuales.
+- **Clientes**: volumen y horas por cliente (promedio mensual), ranking.
+- **Heatmap**: tickets por cliente × mes, con el número en cada celda y
+  totales por mes.
 
 Mientras no te hayas conectado a Odoo, el tablero muestra un dataset de
 ejemplo sintético (marcado explícitamente) para que puedas ver el diseño

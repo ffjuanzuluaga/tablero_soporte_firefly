@@ -38,6 +38,8 @@ def empty_state(message: str = "Sin datos para los filtros seleccionados") -> go
 
 
 def created_vs_closed(trend_df: pd.DataFrame) -> go.Figure:
+    """Barras agrupadas de creados/cerrados por mes + línea de backlog (cola
+    de tickets abiertos al cierre de cada mes), si viene esa columna."""
     if trend_df.empty:
         return empty_state()
     fig = go.Figure()
@@ -45,6 +47,11 @@ def created_vs_closed(trend_df: pd.DataFrame) -> go.Figure:
                 marker_color=C.CATEGORICAL[0], marker_line_width=0)
     fig.add_bar(x=trend_df["label"], y=trend_df["cerrados"], name="Cerrados",
                 marker_color=C.STATUS["good"], marker_line_width=0)
+    if "backlog" in trend_df.columns:
+        fig.add_scatter(x=trend_df["label"], y=trend_df["backlog"], name="Backlog (cola)",
+                         mode="lines+markers", line=dict(color=C.STATUS["critical"], width=2, dash="dot"),
+                         marker=dict(size=6, color=C.STATUS["critical"]),
+                         hovertemplate="%{x}<br>Backlog: %{y}<extra></extra>")
     fig.update_layout(barmode="group", bargap=0.25, bargroupgap=0.08)
     return _base_layout(fig, height=300)
 
@@ -116,32 +123,16 @@ def vertical_bar(df: pd.DataFrame, label_col: str, value_col: str, color: str = 
     return _base_layout(fig, height=300, show_legend=False)
 
 
-def stacked_sla_by_policy(df: pd.DataFrame) -> go.Figure:
-    if df.empty:
-        return empty_state("No hay políticas de SLA aplicadas en los tickets filtrados")
-    fig = go.Figure()
-    fig.add_bar(x=df["policy"], y=df["cumplidas"], name="Cumplida", marker_color=C.STATUS["good"], marker_line_width=0)
-    fig.add_bar(x=df["policy"], y=df["incumplidas"], name="Incumplida", marker_color=C.STATUS["critical"], marker_line_width=0)
-    fig.update_layout(barmode="stack", bargap=0.3)
-    return _base_layout(fig, height=300)
-
-
-def grouped_bar_two_series(x, series: dict[str, tuple[list, str]]) -> go.Figure:
-    """series: {nombre: (valores, color)}"""
-    fig = go.Figure()
-    for name, (values, color) in series.items():
-        fig.add_bar(x=x, y=values, name=name, marker_color=color, marker_line_width=0)
-    fig.update_layout(barmode="group", bargap=0.25, bargroupgap=0.08)
-    return _base_layout(fig, height=300)
-
-
 def heatmap(pivot: pd.DataFrame) -> go.Figure:
+    """pivot: index=cliente, columnas=mes. Escala clara→oscura (claro = pocos,
+    oscuro = muchos) y el número de tickets visible en cada celda."""
     if pivot.empty or pivot.shape[1] == 0:
         return empty_state()
     fig = go.Figure(go.Heatmap(
         z=pivot.values, x=list(pivot.columns), y=list(pivot.index),
-        colorscale=[[0, C.SURFACE]] + [[i / (len(C.SEQUENTIAL_BLUE) - 1), c] for i, c in enumerate(C.SEQUENTIAL_BLUE)],
+        colorscale=[[i / (len(C.SEQUENTIAL_BLUE) - 1), c] for i, c in enumerate(C.SEQUENTIAL_BLUE)],
         showscale=True, xgap=3, ygap=3,
+        text=pivot.values, texttemplate="%{text}", textfont=dict(size=10, color=C.INK_PRIMARY),
         colorbar=dict(tickfont=dict(color=C.INK_MUTED, size=10), outlinewidth=0),
         hovertemplate="%{y} · %{x}: %{z}<extra></extra>",
     ))
@@ -150,12 +141,46 @@ def heatmap(pivot: pd.DataFrame) -> go.Figure:
     return _base_layout(fig, height=height, show_legend=False)
 
 
-def stacked_area_or_bar_by_group(pivot: pd.DataFrame) -> go.Figure:
+def stacked_bar_by_month_group(pivot: pd.DataFrame, colors: dict[str, str] | None = None,
+                                value_labels: bool = True) -> go.Figure:
+    """pivot: index=mes (label), columnas=grupo (prioridad, técnico...).
+
+    `colors`: {nombre_columna: color}. Si no se da, cicla la paleta categórica
+    (para grupos sin un color fijo con significado, ej. técnicos).
+    """
     if pivot.empty:
         return empty_state()
     fig = go.Figure()
     for i, col in enumerate(pivot.columns):
-        fig.add_bar(x=pivot.index, y=pivot[col], name=str(col),
-                    marker_color=C.CATEGORICAL[i % len(C.CATEGORICAL)], marker_line_width=0)
+        color = colors.get(str(col), C.CATEGORICAL[i % len(C.CATEGORICAL)]) if colors else C.CATEGORICAL[i % len(C.CATEGORICAL)]
+        values = pivot[col]
+        fig.add_bar(
+            x=pivot.index, y=values, name=str(col), marker_color=color, marker_line_width=0,
+            text=[f"{v:,.0f}" if v else "" for v in values] if value_labels else None,
+            textposition="inside", textfont=dict(size=10, color="#ffffff"),
+        )
     fig.update_layout(barmode="stack", bargap=0.25)
+    return _base_layout(fig, height=340)
+
+
+def multi_line_by_group(pivot: pd.DataFrame, colors: dict[str, str] | None = None,
+                         value_suffix: str = "", point_labels: bool = True,
+                         y_range: tuple | None = None) -> go.Figure:
+    """pivot: index=mes (label), columnas=grupo (prioridad...). Una línea por
+    columna, con el valor marcado en cada punto para no dejarlo "a ojo"."""
+    if pivot.empty:
+        return empty_state()
+    fig = go.Figure()
+    for i, col in enumerate(pivot.columns):
+        color = colors.get(str(col), C.CATEGORICAL[i % len(C.CATEGORICAL)]) if colors else C.CATEGORICAL[i % len(C.CATEGORICAL)]
+        values = pivot[col]
+        fig.add_scatter(
+            x=pivot.index, y=values, name=str(col), mode="lines+markers+text" if point_labels else "lines+markers",
+            line=dict(color=color, width=2), marker=dict(size=6, color=color),
+            text=[f"{v:,.0f}{value_suffix}" if pd.notna(v) else "" for v in values] if point_labels else None,
+            textposition="top center", textfont=dict(size=10, color=color),
+            hovertemplate=f"%{{x}}<br>{col}: %{{y:.1f}}{value_suffix}<extra></extra>",
+        )
+    if y_range:
+        fig.update_yaxes(range=list(y_range))
     return _base_layout(fig, height=340)
