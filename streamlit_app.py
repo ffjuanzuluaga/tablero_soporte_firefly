@@ -92,6 +92,11 @@ else:
     fetch_to = st.sidebar.date_input("Hasta", value=today)
     if st.sidebar.button("🔄 Refrescar datos", type="primary"):
         st.cache_data.clear()
+        # cache_resource (la conexión) no se invalida solo porque cambien
+        # otros archivos (p.ej. se le agrega un método a OdooClient) — solo
+        # rastrea el código de get_odoo_client() en sí. Se limpia a mano para
+        # no quedar sirviendo un cliente viejo tras un deploy de código nuevo.
+        st.cache_resource.clear()
         st.rerun()
 
     try:
