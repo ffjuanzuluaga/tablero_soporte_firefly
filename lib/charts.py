@@ -38,8 +38,8 @@ def empty_state(message: str = "Sin datos para los filtros seleccionados") -> go
 
 
 def created_vs_closed(trend_df: pd.DataFrame) -> go.Figure:
-    """Barras agrupadas de creados/cerrados por mes + línea de backlog (cola
-    de tickets abiertos al cierre de cada mes), si viene esa columna."""
+    """Barras agrupadas de creados/cerrados/backlog por mes (barra, no línea,
+    con el valor encima para que el número quede claro), si viene esa columna."""
     if trend_df.empty:
         return empty_state()
     fig = go.Figure()
@@ -48,10 +48,11 @@ def created_vs_closed(trend_df: pd.DataFrame) -> go.Figure:
     fig.add_bar(x=trend_df["label"], y=trend_df["cerrados"], name="Cerrados",
                 marker_color=C.STATUS["good"], marker_line_width=0)
     if "backlog" in trend_df.columns:
-        fig.add_scatter(x=trend_df["label"], y=trend_df["backlog"], name="Backlog (cola)",
-                         mode="lines+markers", line=dict(color=C.STATUS["critical"], width=2, dash="dot"),
-                         marker=dict(size=6, color=C.STATUS["critical"]),
-                         hovertemplate="%{x}<br>Backlog: %{y}<extra></extra>")
+        fig.add_bar(x=trend_df["label"], y=trend_df["backlog"], name="Backlog (cola)",
+                    marker_color=C.STATUS["critical"], marker_line_width=0,
+                    text=[f"{v:,.0f}" for v in trend_df["backlog"]], textposition="outside",
+                    textfont=dict(size=10, color=C.STATUS["critical"]),
+                    hovertemplate="%{x}<br>Backlog: %{y}<extra></extra>")
     fig.update_layout(barmode="group", bargap=0.25, bargroupgap=0.08)
     return _base_layout(fig, height=300)
 

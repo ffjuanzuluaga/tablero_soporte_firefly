@@ -287,10 +287,10 @@ with tab_tech:
     ])
 
     ui.chart_header("Tickets por técnico, por mes", "Quién resolvió cuántos tickets cada mes")
-    st.plotly_chart(charts.stacked_bar_by_month_group(metrics.technician_monthly(df)), width='stretch', config={"displayModeBar": False}, key="tech_tickets_monthly")
+    st.plotly_chart(charts.multi_line_by_group(metrics.technician_monthly(df)), width='stretch', config={"displayModeBar": False}, key="tech_tickets_monthly")
 
     ui.chart_header("Horas por técnico, por mes", "Cuántas horas trabajó cada técnico en soporte, por mes")
-    st.plotly_chart(charts.stacked_bar_by_month_group(metrics.technician_hours_monthly(df)), width='stretch', config={"displayModeBar": False}, key="tech_hours_monthly")
+    st.plotly_chart(charts.multi_line_by_group(metrics.technician_hours_monthly(df), value_suffix="h"), width='stretch', config={"displayModeBar": False}, key="tech_hours_monthly")
 
     ui.chart_header("Ranking de técnicos", "Promedios mensuales — no acumulado")
     show = tech_df.copy()
