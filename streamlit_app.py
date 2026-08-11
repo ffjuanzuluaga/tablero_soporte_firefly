@@ -19,7 +19,7 @@ from lib.odoo_client import (
     OdooClient,
     OdooConnectionError,
     OdooCredentials,
-    fetch_active_support_contracts,
+    fetch_contract_usage,
     fetch_ticket_sample_raw,
     fetch_tickets,
 )
@@ -59,9 +59,14 @@ def load_tickets_cached(_client: OdooClient, date_from: str, date_to: str) -> pd
     return fetch_tickets(_client, date_from=date_from, date_to=date_to)
 
 
-@st.cache_data(ttl=600, show_spinner="Consultando contratos de soporte activos…")
-def load_active_contracts_cached(_client: OdooClient) -> int | None:
-    return fetch_active_support_contracts(_client)
+@st.cache_data(ttl=600, show_spinner="Consultando contratos de soporte…")
+def load_contract_usage_cached(_client: OdooClient) -> pd.DataFrame | None:
+    return fetch_contract_usage(_client)
+
+
+@st.cache_data(ttl=600, show_spinner="Consultando compromisos de SLA…")
+def load_sla_commitments_cached(_client: OdooClient) -> dict[str, list[float]]:
+    return _client.sla_commitments()
 
 
 try:
@@ -73,7 +78,8 @@ except OdooConnectionError as exc:
 
 using_demo = True
 df_all = None
-active_contracts = None
+contract_usage_df = None
+sla_commitments: dict[str, list[float]] = {}
 
 if connection_error:
     st.sidebar.error(connection_error)
@@ -90,7 +96,8 @@ else:
 
     try:
         df_all = load_tickets_cached(odoo_client, fetch_from.isoformat(), fetch_to.isoformat())
-        active_contracts = load_active_contracts_cached(odoo_client)
+        contract_usage_df = load_contract_usage_cached(odoo_client)
+        sla_commitments = load_sla_commitments_cached(odoo_client)
         using_demo = False
     except OdooConnectionError as exc:
         st.sidebar.error(str(exc))
@@ -107,14 +114,17 @@ else:
 if using_demo:
     if df_all is None:
         df_all = build_demo_dataframe()
+    active_contracts = metrics.active_contracts_count(contract_usage_df)
     if active_contracts is None:
-        # Sin conexión real no hay forma de consultar suscripciones: se
+        # Sin conexión real no hay forma de consultar el addon de contratos: se
         # aproxima con una fracción de los clientes de ejemplo, marcado
         # explícitamente como dato de ejemplo más abajo.
         active_contracts = max(1, df_all["partner"].nunique() // 3)
 elif df_all.empty:
     st.warning("La consulta a Odoo no devolvió tickets para ese rango de fechas.")
     st.stop()
+else:
+    active_contracts = metrics.active_contracts_count(contract_usage_df)
 
 
 # ---------------------------------------------------------------------------
@@ -195,11 +205,20 @@ with tab_overview:
     k = metrics.kpis(df)
     ui.kpi_row([
         {"label": "Tickets abiertos actualmente", "value": k["open"], "sub": f"de {k['total']} creados en el periodo", "color": C.STATUS["warning"]},
+        {"label": "Abiertos / mes (prom.)", "value": f"{k['created_avg_per_month']:.1f}", "sub": f"sobre {k['months_in_range']} meses", "color": C.CATEGORICAL[1]},
         {"label": "Cerrados / mes (prom.)", "value": f"{k['closed_avg_per_month']:.1f}", "sub": f"sobre {k['months_in_range']} meses", "color": C.STATUS["good"]},
         {"label": "Horas equipo / mes (prom.)", "value": ui.fmt_hours(k["hours_avg_per_month"]), "sub": "suma de todo el equipo", "color": C.CATEGORICAL[6]},
         {"label": "Horas equipo — mes actual", "value": ui.fmt_hours(k["hours_current_month"]), "sub": f"{C.MESES_ES[dt.date.today().month]} {dt.date.today().year}", "color": C.CATEGORICAL[0]},
-        {"label": "Clientes con contrato activo", "value": active_contracts if active_contracts is not None else "N/D", "sub": "suscripción de soporte en curso", "color": C.CATEGORICAL[1]},
+        {"label": "Clientes con contrato activo", "value": active_contracts if active_contracts is not None else "N/D", "sub": "contrato de soporte con límite mensual, hoy vigente", "color": C.CATEGORICAL[2]},
     ])
+
+    oldest = metrics.oldest_open_ticket(df)
+    if oldest:
+        st.caption(
+            f"🕐 Ticket más viejo abierto: **{oldest['ticket_label']}** — {oldest['name']} "
+            f"({oldest['partner']}) · lleva **{oldest['days_open']} días** abierto, creado el "
+            f"{oldest['create_date']:%d/%m/%Y}."
+        )
 
     st.write("")
     ui.chart_header("Tickets creados vs. cerrados vs. pendientes", "Cola/backlog = tickets abiertos al cierre de cada mes (independiente de cuándo se crearon)")
@@ -241,9 +260,17 @@ with tab_overview:
 # --- SLA ---------------------------------------------------------------
 with tab_sla:
     ui.section_title("Cumplimiento y tiempos por criticidad")
+
+    def _commitment_text(p: str) -> str:
+        hours = sorted(set(sla_commitments.get(p, [])))
+        if not hours:
+            return "sobre tickets con SLA resuelto"
+        hours_txt = " / ".join(f"{h:g}h" for h in hours)
+        return f"Compromiso: {hours_txt} · sobre tickets con SLA resuelto"
+
     compliance = metrics.sla_compliance_by_priority(df)
     ui.kpi_row([
-        {"label": f"Cumplimiento SLA — {p}", "value": ui.fmt_pct(compliance.get(p)), "sub": "sobre tickets con SLA resuelto", "color": prio_colors.get(p, C.CATEGORICAL[0])}
+        {"label": f"Cumplimiento SLA — {p}", "value": ui.fmt_pct(compliance.get(p)), "sub": _commitment_text(p), "color": prio_colors.get(p, C.CATEGORICAL[0])}
         for p in order
     ])
     resolution_kpi = metrics.resolution_avg_by_priority(df)
@@ -286,11 +313,17 @@ with tab_tech:
         {"label": "Horas / técnico / mes (prom.)", "value": ui.fmt_hours(tech_df["horas_prom_mes"].mean()) if len(tech_df) else "—", "sub": "tiempo registrado", "color": C.CATEGORICAL[6]},
     ])
 
+    ui.chart_header("Horas totales del equipo, por mes", "Suma de horas de todo el equipo — dedicación total a soporte")
+    st.plotly_chart(charts.line_series(metrics.monthly_total_hours(df), "label", "horas", "Horas equipo", color=C.CATEGORICAL[6], y_suffix="h"), width='stretch', config={"displayModeBar": False}, key="tech_total_hours_monthly")
+
     ui.chart_header("Tickets por técnico, por mes", "Quién resolvió cuántos tickets cada mes")
     st.plotly_chart(charts.multi_line_by_group(metrics.technician_monthly(df)), width='stretch', config={"displayModeBar": False}, key="tech_tickets_monthly")
 
     ui.chart_header("Horas por técnico, por mes", "Cuántas horas trabajó cada técnico en soporte, por mes")
     st.plotly_chart(charts.multi_line_by_group(metrics.technician_hours_monthly(df), value_suffix="h"), width='stretch', config={"displayModeBar": False}, key="tech_hours_monthly")
+
+    ui.chart_header("Cumplimiento de SLA por técnico, por mes", "% de tickets con SLA cumplido, por técnico")
+    st.plotly_chart(charts.multi_line_by_group(metrics.monthly_compliance_by_technician(df), value_suffix="%", y_range=(0, 100)), width='stretch', config={"displayModeBar": False}, key="tech_sla_compliance_monthly")
 
     ui.chart_header("Ranking de técnicos", "Promedios mensuales — no acumulado")
     show = tech_df.copy()
@@ -298,36 +331,57 @@ with tab_tech:
     show["cumplimiento_sla_pct"] = show["cumplimiento_sla_pct"].map(ui.fmt_pct)
     show["tickets_prom_mes"] = show["tickets_prom_mes"].round(1)
     show["horas_prom_mes"] = show["horas_prom_mes"].round(1)
-    show.columns = ["Técnico", "Meses activos", "Tickets/mes", "Horas/mes", "Cerrados", "Resolución prom.", "Cumplimiento SLA"]
+    show.columns = ["Técnico", "Meses activos", "Tickets/mes", "Horas/mes", "Abiertos", "Cerrados", "Incumplidas", "Resolución prom.", "Cumplimiento SLA"]
     st.dataframe(show, width='stretch', hide_index=True)
 
 
 # --- Clientes ---------------------------------------------------------------
 with tab_clients:
     client_df = metrics.by_client(df)
+    months_in_range = metrics.kpis(df)["months_in_range"]
+    period_note = f"sobre los últimos {months_in_range} meses de este cliente (no del rango completo, para no penalizar a quien lleva menos tiempo en soporte)"
     ui.section_title("Análisis de clientes — promedio mensual")
     ui.kpi_row([
         {"label": "Clientes activos", "value": metrics.kpis(df)["clients_active"], "sub": "con al menos 1 ticket", "color": C.CATEGORICAL[0]},
         {"label": "Tickets / cliente / mes (prom.)", "value": f"{client_df['tickets_prom_mes'].mean():.1f}" if len(client_df) else "—", "sub": "promedio de volumen", "color": C.CATEGORICAL[2]},
         {"label": "Horas / cliente / mes (prom.)", "value": ui.fmt_hours(client_df["horas_prom_mes"].mean()) if len(client_df) else "—", "sub": "tiempo invertido", "color": C.CATEGORICAL[6]},
     ])
+    st.caption(f"Los promedios de esta pestaña se calculan {period_note}.")
 
     c1, c2 = st.columns(2)
     with c1:
-        ui.chart_header("Top clientes por tickets", "Promedio mensual")
+        ui.chart_header("Top clientes por tickets", "Promedio mensual — no acumulado")
         st.plotly_chart(charts.horizontal_bar(client_df, "partner", "tickets_prom_mes", color=C.CATEGORICAL[0], top_n=12), width='stretch', config={"displayModeBar": False}, key="client_top_tickets")
     with c2:
-        ui.chart_header("Top clientes por horas invertidas", "Promedio mensual")
+        ui.chart_header("Top clientes por horas invertidas", "Promedio mensual — no acumulado")
         st.plotly_chart(charts.horizontal_bar(client_df, "partner", "horas_prom_mes", color=C.CATEGORICAL[6], top_n=12, value_suffix="h"), width='stretch', config={"displayModeBar": False}, key="client_top_hours")
 
-    ui.chart_header("Detalle por cliente", "Promedios mensuales — no acumulado")
+    ui.chart_header("Detalle por cliente", "Promedios mensuales — no acumulado. Incumplidas = tickets con SLA incumplido")
     show = client_df.copy()
     show["resolucion_prom_horas"] = show["resolucion_prom_horas"].map(ui.fmt_hours)
     show["cumplimiento_sla_pct"] = show["cumplimiento_sla_pct"].map(ui.fmt_pct)
     show["tickets_prom_mes"] = show["tickets_prom_mes"].round(1)
     show["horas_prom_mes"] = show["horas_prom_mes"].round(1)
-    show.columns = ["Cliente", "Meses activo", "Tickets/mes", "Horas/mes", "Cerrados", "Resolución prom.", "Cumplimiento SLA"]
+    show.columns = ["Cliente", "Meses activo", "Tickets/mes", "Horas/mes", "Abiertos", "Cerrados", "Incumplidas", "Resolución prom.", "Cumplimiento SLA"]
     st.dataframe(show, width='stretch', hide_index=True)
+
+    ui.section_title("Contratos de soporte")
+    ui.chart_header("Contratos de soporte activos, por mes", "Vigencia (inicio/fin del contrato) que cubre cada mes — no solo el estado de hoy")
+    st.plotly_chart(charts.line_series(metrics.monthly_active_contracts(contract_usage_df, df), "label", "contratos_activos", "Contratos activos", color=C.CATEGORICAL[1]), width='stretch', config={"displayModeBar": False}, key="client_contracts_monthly")
+
+    ui.chart_header("Clientes que superan su capacidad contratada", "Tickets u horas usados este mes por encima de lo contratado (según el addon de contratos)")
+    over_capacity = metrics.contracts_over_capacity(contract_usage_df)
+    if contract_usage_df is None:
+        st.caption("No disponible: el addon de contratos de soporte no está instalado o no se pudo consultar.")
+    elif over_capacity.empty:
+        st.caption("Ningún cliente supera su límite contratado este mes.")
+    else:
+        show_cap = over_capacity.rename(columns={
+            "name": "Cliente", "support_tickets_used": "Tickets usados", "support_ticket_limit": "Tickets contratados",
+            "support_tickets_remaining": "Tickets disponibles", "support_hours_used": "Horas usadas",
+            "support_hours_limit": "Horas contratadas", "support_hours_remaining": "Horas disponibles",
+        })
+        st.dataframe(show_cap, width='stretch', hide_index=True)
 
 
 # --- Heatmap ---------------------------------------------------------------

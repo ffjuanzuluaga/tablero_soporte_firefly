@@ -133,6 +133,20 @@ def top3_clients_open(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame({"partner": counts.index, "abiertos": counts.values})
 
 
+def oldest_open_ticket(df: pd.DataFrame) -> dict | None:
+    open_df = df[~df["is_closed"]]
+    if open_df.empty:
+        return None
+    row = open_df.loc[open_df["create_date"].idxmin()]
+    return {
+        "ticket_label": row["ticket_label"],
+        "name": row["name"],
+        "partner": row["partner"],
+        "create_date": row["create_date"],
+        "days_open": int((pd.Timestamp.now() - row["create_date"]).days),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Series mensuales (Resumen)
 # ---------------------------------------------------------------------------
@@ -250,6 +264,14 @@ def monthly_resolution_by_priority(df: pd.DataFrame) -> pd.DataFrame:
     return _pivot_by_month_and_priority(sub, "resolution_hours", "mean", months, order)
 
 
+def monthly_total_hours(df: pd.DataFrame) -> pd.DataFrame:
+    """Suma de horas de TODO el equipo, por mes (no por técnico ni prioridad)."""
+    months = _month_axis(df)
+    sums = df.groupby("create_month")["total_hours_spent"].sum()
+    rows = [{"month": m, "label": _month_label(m), "horas": float(sums.get(m, 0.0) or 0.0)} for m in months]
+    return pd.DataFrame(rows)
+
+
 # ---------------------------------------------------------------------------
 # Técnicos / clientes — promedio mensual (÷ meses activos propios)
 # ---------------------------------------------------------------------------
@@ -260,7 +282,7 @@ def _agent_rollup(df: pd.DataFrame, dimension: str, exclude_default: str, top_n:
     no poner en desventaja a quien lleva menos tiempo en soporte."""
     sub = df[df[dimension] != exclude_default]
     cols = [dimension, "meses_activos", "tickets_prom_mes", "horas_prom_mes",
-            "cerrados", "resolucion_prom_horas", "cumplimiento_sla_pct"]
+            "abiertos", "cerrados", "incumplidas", "resolucion_prom_horas", "cumplimiento_sla_pct"]
     if sub.empty:
         return pd.DataFrame(columns=cols)
 
@@ -274,7 +296,9 @@ def _agent_rollup(df: pd.DataFrame, dimension: str, exclude_default: str, top_n:
             "meses_activos": meses_activos,
             "tickets_prom_mes": len(part) / meses_activos,
             "horas_prom_mes": float(part["total_hours_spent"].dropna().sum()) / meses_activos,
+            "abiertos": int((~part["is_closed"]).sum()),
             "cerrados": int(part["is_closed"].sum()),
+            "incumplidas": int((part["sla_status"] == "Incumplida").sum()),
             "resolucion_prom_horas": _safe_mean(part.loc[part["is_closed"], "resolution_hours"]),
             "cumplimiento_sla_pct": pct,
         })
@@ -318,6 +342,21 @@ def technician_hours_monthly(df: pd.DataFrame, top_n: int = 6) -> pd.DataFrame:
     return pivot[top_techs] if top_techs else pivot
 
 
+def monthly_compliance_by_technician(df: pd.DataFrame, top_n: int = 6) -> pd.DataFrame:
+    """% de cumplimiento de SLA por mes × técnico (top N por volumen)."""
+    top_techs = by_technician(df, top_n=top_n)["user"].tolist()
+    months = _month_axis(df)
+    known = df[df["sla_status"].isin(SLA_KNOWN_OUTCOME) & df["user"].isin(top_techs)].copy()
+    if known.empty:
+        return pd.DataFrame(index=[_month_label(m) for m in months], columns=top_techs, dtype=float)
+    known["cumplida"] = known["sla_status"].eq("Cumplida") * 100
+    pivot = known.pivot_table(index="create_month", columns="user", values="cumplida", aggfunc="mean")
+    pivot = pivot.reindex(months)
+    pivot = pivot.reindex(columns=top_techs)
+    pivot.index = [_month_label(m) for m in pivot.index]
+    return pivot
+
+
 # ---------------------------------------------------------------------------
 # Heatmap
 # ---------------------------------------------------------------------------
@@ -331,3 +370,51 @@ def heatmap_client_month(df: pd.DataFrame, top_n: int = 15) -> pd.DataFrame:
     pivot = pivot.reindex(top_clients)
     pivot.columns = [_month_label(m) for m in pivot.columns]
     return pivot
+
+
+# ---------------------------------------------------------------------------
+# Contratos de soporte (addon `support_contract`, res.partner)
+# ---------------------------------------------------------------------------
+
+def active_contracts_count(contract_df: pd.DataFrame | None) -> int | None:
+    """# de clientes con contrato de soporte activo ahora mismo. None si no
+    hay datos de contrato disponibles (addon no instalado)."""
+    if contract_df is None:
+        return None
+    if contract_df.empty or "support_contract_state" not in contract_df.columns:
+        return 0
+    return int((contract_df["support_contract_state"] == "active").sum())
+
+
+def monthly_active_contracts(contract_df: pd.DataFrame | None, df: pd.DataFrame) -> pd.DataFrame:
+    """Contratos cuya vigencia (inicio/fin) cubre cada mes del rango de
+    tickets — así se compara mes a mes, no solo el estado de hoy."""
+    months = _month_axis(df)
+    labels = [_month_label(m) for m in months]
+    if contract_df is None or contract_df.empty or "support_contract_start" not in contract_df.columns:
+        return pd.DataFrame({"month": months, "label": labels, "contratos_activos": [0] * len(months)})
+
+    start = pd.to_datetime(contract_df["support_contract_start"], errors="coerce")
+    end = pd.to_datetime(contract_df.get("support_contract_end"), errors="coerce")
+    rows = []
+    for m in months:
+        month_start, month_end = m.to_timestamp(how="start"), m.to_timestamp(how="end")
+        active = (start <= month_end) & (end.isna() | (end >= month_start))
+        rows.append({"month": m, "label": _month_label(m), "contratos_activos": int(active.sum())})
+    return pd.DataFrame(rows)
+
+
+def contracts_over_capacity(contract_df: pd.DataFrame | None) -> pd.DataFrame:
+    """Clientes que ya superaron su límite mensual contratado (tickets y/o horas)."""
+    cols = ["name", "support_tickets_used", "support_ticket_limit", "support_tickets_remaining",
+            "support_hours_used", "support_hours_limit", "support_hours_remaining"]
+    if contract_df is None or contract_df.empty:
+        return pd.DataFrame(columns=cols)
+    df = contract_df.copy()
+    for c in cols[1:]:
+        if c not in df.columns:
+            df[c] = 0
+    over_tickets = (df["support_ticket_limit"] > 0) & (df["support_tickets_remaining"] < 0)
+    over_hours = (df["support_hours_limit"] > 0) & (df["support_hours_remaining"] < 0)
+    out = df.loc[over_tickets | over_hours, cols]
+    return out.sort_values("support_tickets_remaining").reset_index(drop=True)

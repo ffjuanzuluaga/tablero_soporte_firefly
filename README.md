@@ -46,9 +46,11 @@ sí está en `.gitignore`, nunca se sube al repo) y completa:
 Para un **despliegue compartido** (Streamlit Community Cloud u otro),
 configura la misma tabla `[odoo]` en *Manage app → Settings → Secrets*. El
 usuario de Odoo que uses necesita acceso de lectura a `helpdesk.ticket`,
-`helpdesk.sla` y, si quieres el KPI de contratos activos, `sale.order`
-(módulo `sale_subscription`) — el tablero respeta los permisos y reglas de
-registro de ese usuario, tal como lo haría dentro de Odoo.
+`helpdesk.sla` y, si quieres los KPIs de contratos de soporte (clientes
+activos, sobre-capacidad, histórico mensual), a los campos `support_*` de
+`res.partner` que agrega el addon propio `support_contract` — el tablero
+respeta los permisos y reglas de registro de ese usuario, tal como lo haría
+dentro de Odoo.
 
 Ya conectado, define el **rango de fechas a consultar** en la barra lateral
 (por defecto, **últimos 6 meses** — el mínimo para ver comparativos
@@ -70,17 +72,21 @@ clientes/técnicos usan **promedio mensual** (no acumulado) para no penalizar
 a quien lleva menos tiempo en soporte.
 
 - **Resumen**: tickets abiertos actualmente, promedios mensuales de
-  cerrados/horas, horas del mes en curso, clientes con contrato de soporte
-  activo, creados vs. cerrados vs. backlog (cola acumulada), etapa de los
-  abiertos, prioridad por mes, tasa de efectividad de cierre, top clientes
-  (promedio) y top 3 clientes con más tickets abiertos.
+  abiertos/cerrados/horas, horas del mes en curso, clientes con contrato de
+  soporte activo, ticket más viejo abierto, creados vs. cerrados vs. backlog
+  (cola acumulada), etapa de los abiertos, prioridad por mes, tasa de
+  efectividad de cierre, top clientes (promedio) y top 3 con más abiertos.
 - **SLA**: cumplimiento y resolución promedio por criticidad (4 indicadores
-  c/u), incumplimiento apilado por criticidad por mes, cumplimiento mensual
-  en 4 líneas con el % marcado en cada punto, detalle histórico mes×
-  prioridad, horas y primera respuesta promedio por mes (por criticidad).
-- **Técnicos**: tickets y horas por técnico y mes, ranking con promedios
-  mensuales.
-- **Clientes**: volumen y horas por cliente (promedio mensual), ranking.
+  c/u, con el compromiso de horas de la política de SLA cuando aplica),
+  incumplimiento apilado por criticidad por mes, cumplimiento mensual en 4
+  líneas con el % marcado en cada punto, detalle histórico mes× prioridad,
+  horas y primera respuesta promedio por mes (por criticidad).
+- **Técnicos**: horas totales del equipo por mes, tickets y horas por
+  técnico y mes, cumplimiento de SLA por técnico y mes, ranking con
+  promedios mensuales.
+- **Clientes**: volumen y horas por cliente (promedio mensual), contratos de
+  soporte activos por mes (histórico), clientes que superan su capacidad
+  contratada (tickets u horas), ranking.
 - **Heatmap**: tickets por cliente × mes, con el número en cada celda y
   totales por mes.
 
